@@ -31,17 +31,18 @@ int main() {
   unsigned char *originalImage = (unsigned char*) malloc(n * sizeof(unsigned char));
   unsigned char *grayscaleImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
   unsigned char *baselineGrayscale = (unsigned char*) malloc(width*height * sizeof(unsigned char));
-  unsigned char *blurredImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
-  unsigned char *baselineBlurred = (unsigned char*) malloc(width*height * sizeof(unsigned char));
-  unsigned char *edgeImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
-  unsigned char *baselineEdge = (unsigned char*) malloc(width*height * sizeof(unsigned char));
-  float *directions = (float*) malloc(width*height * sizeof(float));
-  float *baselineDirections = (float*) malloc(width*height * sizeof(float));
+  // unsigned char *blurredImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
+  // unsigned char *baselineBlurred = (unsigned char*) malloc(width*height * sizeof(unsigned char));
+  // unsigned char *edgeImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
+  // unsigned char *baselineEdge = (unsigned char*) malloc(width*height * sizeof(unsigned char));
+  // float *directions = (float*) malloc(width*height * sizeof(float));
+  // float *baselineDirections = (float*) malloc(width*height * sizeof(float));
   // unsigned char *suppressedImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
   // unsigned char *baselineSuppressed = (unsigned char*) malloc(width*height * sizeof(unsigned char));
   // unsigned char *thresholdImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
   // unsigned char *baselineThreshold = (unsigned char*) malloc(width*height * sizeof(unsigned char));
   // unsigned char *finalImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
+  // unsigned char *baselineFinal = (unsigned char*) malloc(width*height * sizeof(unsigned char));
 
 
   // read original image
@@ -51,30 +52,28 @@ int main() {
 
   // calculate baseline
   serialGrayscale(originalImage, baselineGrayscale, width, height);
-  serialGaussianBlur(baselineGrayscale, baselineBlurred, width, height);
-  serialEdgeDetection(baselineBlurred, baselineEdge, baselineDirections, width, height);
-  // serialNonMaxSuppression(edgeImage, suppressedImage, directions, width, height);
-  // serialThreshold(suppressedImage, thresholdImage, width, height);
-  // serialCleanup(thresholdImage, finalImage, width, height);
+  // serialGaussianBlur(baselineGrayscale, baselineBlurred, width, height);
+  // serialEdgeDetection(baselineBlurred, baselineEdge, baselineDirections, width, height);
+  // serialNonMaxSuppression(baselineEdge, baselineSuppressed, baselineDirections, width, height);
+  // serialThreshold(baselineSuppressed, baselineThreshold, width, height);
+  // serialCleanup(baselineThreshold, baselineFinal, width, height);
 
   // serial canny edge detection
   // serialCanny(originalImage, finalImage, width, height); // COMPLETE
 
   // openmp canny edge detection
-  sharedGrayscale(originalImage, grayscaleImage, width, height, threadcount);
-  sharedGaussianBlur(grayscaleImage, blurredImage, width, height, threadcount);
-  sharedEdgeDetection(blurredImage, edgeImage, directions, width, height, threadcount);
-  // sharedNonMaxSuppression(edgeImage, suppressedImage, directions, width, height, threadcount);
-  // sharedThreshold(suppressedImage, thresholdImage, width, height, threadcount);
-  // sharedCleanup(thresholdImage, finalImage, width, height, threadcount);
+  // serialCanny(originalImage, finalImage, width, height, threadcount); // COMPLETE
 
   // distributed canny edge detection with ghost/halo regions exchange
   // distributed canny edge detection without ghost/halo regions exchange (ghost regions preloaded)
   // gpu canny edge detection (different file)
 
   assertEqual(grayscaleImage, baselineGrayscale, width*height);
-  assertEqual(blurredImage, baselineBlurred, width*height);
-  assertEqual(edgeImage, baselineEdge, width*height);
+  // assertEqual(blurredImage, baselineBlurred, width*height);
+  // assertEqual(edgeImage, baselineEdge, width*height);
+  // assertEqual(suppressedImage, baselineSuppressed, width*height);
+  // assertEqual(thresholdImage, baselineThreshold, width*height);
+  // assertEqual(finalImage, baselineFinal, width*height);
 
   // FILE *outputFile;
   // outputFile = fopen("grayscaleImage.raw", "wb+");
@@ -207,9 +206,11 @@ void sharedEdgeDetection(unsigned char* blurredImage, unsigned char* edgeImage, 
 
 void sharedNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressedImage, float* directions, int width, int height, const int threadcount) {
   unsigned char val1, val2;
-  int row, col;
+  int row, col, i, r, c;
   float angle;
-  for (int i=0; i<width*height; i++) {
+  # pragma omp parallel for num_threads(thread_count) \
+    default(none) shared(edgeImage, suppressedImage, directions, width, height) private(i, r, c, row, col, val1, val2, angle)
+  for (i=0; i<width*height; i++) {
     val1 = 255;
     val2 = 255;
     row = i/width;
@@ -217,8 +218,8 @@ void sharedNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressed
     angle = directions[i] * 180 / 3.141592653;
     if (angle < 0) angle += 180;
 
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row==height-1 && r > 0) || (col==width-1 && c > 0)) {
           ;
         } else {
@@ -264,21 +265,26 @@ void sharedNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressed
 void sharedThreshold(unsigned char* suppressedImage, unsigned char* thresholdImage, int width, int height, const int threadcount) {
   unsigned char weak = 25;
   unsigned char strong = 255;
+  int offset, row, col, i, r, c;
+  bool nextToStrong;
   // set weak and strong pixels
-  for (int i=0; i < width*height; i++) {
+  # pragma omp parallel for num_threads(thread_count) \
+    default(none) shared(suppressedImage, thresholdImage, weak, strong, width, height) private(i)
+  for (i=0; i < width*height; i++) {
     if (suppressedImage[i] > 50) suppressedImage[i] = strong;
     else if (suppressedImage[i] > 25) suppressedImage[i] = weak;
     else suppressedImage[i] = 0;
   }
 
   // hysteresis
-  int offset, row, col;
-  for (int i=0; i<width*height; i++) {
-    int row = i/width;
-    int col = i%width;
-    bool nextToStrong = false;
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+  # pragma omp parallel for num_threads(thread_count) \
+    default(none) shared(suppressedImage, thresholdImage, weak, strong, width, height) private(i, r, c, row, col, offset, nextToStrong)
+  for (i=0; i<width*height; i++) {
+    row = i/width;
+    col = i%width;
+    nextToStrong = false;
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row>=height-1 && r > 0) || (col>=width-1 && c > 0)) {
           ;
         } else {
@@ -295,7 +301,10 @@ void sharedThreshold(unsigned char* suppressedImage, unsigned char* thresholdIma
 }
 
 void sharedCleanup(unsigned char* thresholdImage, unsigned char* finalImage, int width, int height, const int threadcount) {
-  for (int i=0; i< width*height; i++) {
+  int i;
+  # pragma omp parallel for num_threads(thread_count) \
+    default(none) shared(thresholdImage, finalImage, width, height) private(i)
+  for (i=0; i< width*height; i++) {
     if (thresholdImage[i] <255) finalImage[i] = 0;
     else finalImage[i] = 255;
   }
