@@ -4,7 +4,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <omp.h>
-// #include <mpi.h>
+#include <mpi.h>
 
 void assertEqual(unsigned char* img1, unsigned char* img2, const int n);
 
@@ -36,6 +36,8 @@ int main() {
   const int threadcount = 4;
   const int width = 3379;
   const int height = 3005;
+  int comm_sz; // number of threads
+  int my_rank; // my thread my_rank
   const int n = width*height*3;
   unsigned char *originalImage = (unsigned char*) malloc(n * sizeof(unsigned char));
   unsigned char *grayscaleImage = (unsigned char*) malloc(width*height * sizeof(unsigned char));
@@ -75,8 +77,11 @@ int main() {
   // sharedCanny(originalImage, finalImage, width, height, threadcount); // COMPLETE
 
   // distributed canny edge detection with ghost/halo regions exchange
+  MPI_Init(NULL, NULL);
+  MPI_Comm_size(MPI_COMM_WORLD, &comm_sz);
+  MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
   // distributedCanny(originalImage, finalImage, width, height, threadcount);
-  distributedGrayscale(originalImage, finalImage, width, height, threadcount);
+  distributedGrayscale(originalImage, grayscaleImage, width, height, threadcount);
 
   // distributed canny edge detection without ghost/halo regions exchange (ghost regions preloaded)
   // gpu canny edge detection (different file)
@@ -147,8 +152,6 @@ void distributedCanny(unsigned char* originalImage, unsigned char* finalImage, c
 
 void distributedGrayscale(unsigned char* colorImage, unsigned char* grayImage, const int width, const int height, const int threadcount) {
   int i;
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(colorImage, grayImage, width, height) private(i)
   for (i=0; i < width*height; i++) {
     unsigned char temp = (colorImage[3*i] + colorImage[3*i+1] +  colorImage[3*i+2])/3;
     grayImage[i] = temp;
@@ -160,8 +163,6 @@ void distributedGaussianBlur(unsigned char* grayImage, unsigned char* blurredIma
   int offset, row, col, i, r, c;
   float gauss[3][3] = {{0.01, 0.08, 0.01}, {0.08, 0.64, 0.08}, {0.01, 0.08, 0.01}};
 
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(grayImage, blurredImage, gauss, width, height) private(i, r, c, row, col, val, offset)
   for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
@@ -188,8 +189,6 @@ void distributedEdgeDetection(unsigned char* blurredImage, unsigned char* edgeIm
   int ky[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
   max = 0;
 
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(blurredImage, edgeImage, directions, kx, ky, width, height, max) private(i, temp, row, col, valx, valy, r, c, offset)
   for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
@@ -221,8 +220,6 @@ void distributedNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppr
   unsigned char val1, val2;
   int row, col, i, r, c;
   float angle;
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(edgeImage, suppressedImage, directions, width, height) private(i, r, c, row, col, val1, val2, angle)
   for (i=0; i<width*height; i++) {
     val1 = 255;
     val2 = 255;
@@ -281,8 +278,6 @@ void distributedThreshold(unsigned char* suppressedImage, unsigned char* thresho
   int offset, row, col, i, r, c;
   bool nextToStrong;
   // set weak and strong pixels
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(suppressedImage, thresholdImage, weak, strong, width, height) private(i)
   for (i=0; i < width*height; i++) {
     if (suppressedImage[i] > 50) suppressedImage[i] = strong;
     else if (suppressedImage[i] > 25) suppressedImage[i] = weak;
@@ -290,8 +285,6 @@ void distributedThreshold(unsigned char* suppressedImage, unsigned char* thresho
   }
 
   // hysteresis
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(suppressedImage, thresholdImage, weak, strong, width, height) private(i, r, c, row, col, offset, nextToStrong)
   for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
@@ -315,8 +308,6 @@ void distributedThreshold(unsigned char* suppressedImage, unsigned char* thresho
 
 void distributedCleanup(unsigned char* thresholdImage, unsigned char* finalImage, int width, int height, const int threadcount) {
   int i;
-  # pragma omp parallel for num_threads(threadcount) \
-    default(none) shared(thresholdImage, finalImage, width, height) private(i)
   for (i=0; i< width*height; i++) {
     if (thresholdImage[i] <255) finalImage[i] = 0;
     else finalImage[i] = 255;
