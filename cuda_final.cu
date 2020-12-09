@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <cuda.h>
 
+// initialize variables to be used on device
 __device__ __constant__ int HEIGHT;
 __device__ __constant__ int WIDTH;
 __device__ __constant__ int BLOCK_WIDTH;
@@ -19,8 +20,8 @@ inline cudaError_t checkCuda(cudaError_t result, int s) {
     return result;
 }
 
+//define serial functions
 void assertEqual(unsigned char* img1, unsigned char* img2, int n);
-
 void serialCanny(unsigned char* colorImage, unsigned char* finalImage, int width, int height);
 void serialGrayscale(unsigned char* colorImage, unsigned char* grayImage, int width, int height);
 void serialGaussianBlur(unsigned char* grayImage, unsigned char* blurredImage, int width, int height);
@@ -29,6 +30,7 @@ void serialNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressed
 void serialThreshold(unsigned char* suppressedImage, unsigned char* thresholdImage, int width, int height);
 void serialCleanup(unsigned char* thresholdImage, unsigned char* finalImage, int width, int height);
 
+//define gpu functions
 __global__ void gpuCanny(unsigned char* colorImage, unsigned char* finalImage);
 __global__ void gpuGrayscale(unsigned char* colorImage, unsigned char* grayImage);
 __global__ void gpuGaussianBlur(unsigned char* grayImage, unsigned char* blurredImage);
@@ -38,14 +40,18 @@ __global__ void gpuThreshold(unsigned char* suppressedImage, unsigned char* thre
 __global__ void gpuCleanup(unsigned char* thresholdImage, unsigned char* finalImage);
 
 int main() {
+  // create host variables for serial and to populate device vars
   int max = 0;
   int width = 3379;
   int height = 3005;
   int block_width = 16;
+  // copy memory to device
   checkCuda(cudaMemcpyToSymbol(HEIGHT, &height, 1*sizeof(int)), 2);
   checkCuda(cudaMemcpyToSymbol(WIDTH, &width, 1*sizeof(int)), 3);
   checkCuda(cudaMemcpyToSymbol(BLOCK_WIDTH, &block_width, 1*sizeof(int)), 4);
 
+  // create buffers for storing image at each stago
+  // baseline images are serial and for comparison
   int n = width*height*3;
   unsigned char *d_original;
   unsigned char *d_grayscale;
@@ -77,7 +83,7 @@ int main() {
   fread(originalImage, sizeof(unsigned char), n, imageFile);
   fclose(imageFile);
 
-  // calculate baseline
+  // calculate baseline using serial version
   serialGrayscale(originalImage, baselineGrayscale, width, height);
   serialGaussianBlur(baselineGrayscale, baselineBlurred, width, height);
   serialEdgeDetection(baselineBlurred, baselineEdge, baselineDirections, width, height);
@@ -85,7 +91,7 @@ int main() {
   serialThreshold(baselineSuppressed, baselineThreshold, width, height);
   serialCleanup(baselineThreshold, baselineFinal, width, height);
 
-  // copy data arrays
+  // copy data to device arrays
   checkCuda(cudaMalloc((void**)&d_original, n*sizeof(unsigned char)), 5);
   checkCuda(cudaMalloc((void**)&d_grayscale, width*height*sizeof(unsigned char)), 6);
   checkCuda(cudaMalloc((void**)&d_blurred, width*height*sizeof(unsigned char)), 69);
@@ -107,13 +113,14 @@ int main() {
   gpuThreshold<<<dimGrid, dimBlock>>>(d_suppressed, d_threshold);
   gpuCleanup<<<dimGrid, dimBlock>>>(d_threshold, d_final);
 
-  // gpu canny edge detection (different file)
+  // copy data back to host arrays
   checkCuda(cudaMemcpy(grayscaleImage, d_grayscale, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 8);
   checkCuda(cudaMemcpy(blurredImage, d_blurred, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 80);
   checkCuda(cudaMemcpy(edgeImage, d_edge, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 800);
   checkCuda(cudaMemcpy(suppressedImage, d_suppressed, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 800);
   checkCuda(cudaMemcpy(thresholdImage, d_threshold, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 800);
   checkCuda(cudaMemcpy(finalImage, d_final, width*height*sizeof(unsigned char), cudaMemcpyDeviceToHost), 800);
+  // free device data
   checkCuda(cudaFree(d_original), 9);
   checkCuda(cudaFree(d_grayscale), 10);
   checkCuda(cudaFree(d_blurred), 20);
@@ -122,6 +129,7 @@ int main() {
   checkCuda(cudaFree(d_threshold), 23);
   checkCuda(cudaFree(d_final), 33);
 
+  // check if buffers are exactly the same. For my code, they are slightly different.
   // assertEqual(grayscaleImage, baselineGrayscale, width*height); // passed
   // assertEqual(blurredImage, baselineBlurred, width*height);
   // assertEqual(edgeImage, baselineEdge, width*height); // this one is getting all zeros!
@@ -129,8 +137,9 @@ int main() {
   // assertEqual(thresholdImage, baselineThreshold, width*height);
   // assertEqual(finalImage, baselineFinal, width*height);
 
+  //output image to cuda.raw
   FILE *outputFile;
-  outputFile = fopen("finalImage.raw", "wb+");
+  outputFile = fopen("cuda.raw", "wb+");
   fwrite(finalImage, sizeof(unsigned char), width*height, outputFile);
   fclose(outputFile);
 }
@@ -150,6 +159,7 @@ int main() {
 //******************************************************************************
 //******************************************************************************
 
+// convert to grayscale
 __global__ void gpuGrayscale(unsigned char* colorImage, unsigned char* grayImage) {
   int col = threadIdx.x + blockIdx.x * blockDim.x;
   int row = threadIdx.y + blockIdx.y * blockDim.y;
@@ -164,6 +174,7 @@ __global__ void gpuGrayscale(unsigned char* colorImage, unsigned char* grayImage
   }
 }
 
+//blur image using a 3x3 kernel with gaussian values
 __global__ void gpuGaussianBlur(unsigned char* grayImage, unsigned char* blurredImage) {
   unsigned char val = 0;
   int offset, row, col, i, r, c;
@@ -188,6 +199,7 @@ __global__ void gpuGaussianBlur(unsigned char* grayImage, unsigned char* blurred
   }
 }
 
+// detect edges in the image
 __global__ void gpuEdgeDetection(unsigned char* blurredImage, unsigned char* edgeImage, float* directions) {
   double valx, valy, temp;
   int offset, row, col, i, r, c;
@@ -212,21 +224,24 @@ __global__ void gpuEdgeDetection(unsigned char* blurredImage, unsigned char* edg
         }
       }
     }
+    // record the max and the directions of the edges for the next steps
     temp = sqrt(pow(valx, 2.0) + pow(valy, 2.0));
     atomicMax(&d_max, (int)temp);
     edgeImage[i] = temp;
     directions[i] = atan(valy/valx);
   }
 
+  // bring all the threads together
   __syncthreads();
 
+  // normalize all values to within 255
   if (col < WIDTH && row < HEIGHT) {
-//printf("gpu: %u, %d\n", edgeImage[i], d_max);
     edgeImage[i] = edgeImage[i]*255/d_max;
-    // printf("%d, ", edgeImage[i]);
   }
 }
 
+// for each pixels in the image, get the two pixels along the same edge direction.
+// if that pixel is not greater than the other two, set it to zero.
 __global__ void gpuNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressedImage, float* directions) {
   unsigned char val1, val2;
   int row, col, i, r, c;
@@ -240,19 +255,21 @@ __global__ void gpuNonMaxSuppression(unsigned char* edgeImage, unsigned char* su
     val2 = 255;
     row = i/WIDTH;
     col = i%WIDTH;
+    //  get the angle of the edge
     angle = directions[i] * 180 / 3.141592653;
     if (angle < 0) angle += 180;
 
+    // cycle through a grid around each variable
     for (r=-1; r<2; r++) {
       for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row==HEIGHT-1 && r > 0) || (col==WIDTH-1 && c > 0)) {
           ;
         } else {
           // 0 angle
-          if ((r==0 && c==1) && (0 <= angle && angle < 22.5 || 157.5 <= angle <= 180)) {
+          if ((r==0 && c==1) && ((0 <= angle && angle < 22.5) || (157.5 <= angle && angle <= 180))) {
             val1 = edgeImage[i + 1]; // i, j+1 right
           } else
-          if ((r==0 && c==-1) && (0 <= angle && angle < 22.5 || 157.5 <= angle <= 180)) {
+          if ((r==0 && c==-1) && ((0 <= angle && angle < 22.5) || (157.5 <= angle && angle <= 180))) {
             val2 = edgeImage[i - 1]; // i, j-1 left
           } else
           // 45 angle
@@ -279,6 +296,7 @@ __global__ void gpuNonMaxSuppression(unsigned char* edgeImage, unsigned char* su
         }
       }
     } // end kernel
+    // if it's not the max, set it to zero
     if (edgeImage[i] >= val1 && edgeImage[i] >= val2) {
       suppressedImage[i] = edgeImage[i];
     } else {
@@ -287,6 +305,7 @@ __global__ void gpuNonMaxSuppression(unsigned char* edgeImage, unsigned char* su
   }
 }
 
+// using arbitrary thresholds, assign each pixel to either weak, strong, or neither.
 __global__ void gpuThreshold(unsigned char* suppressedImage, unsigned char* thresholdImage) {
   unsigned char weak = 25;
   unsigned char strong = 255;
@@ -302,8 +321,10 @@ __global__ void gpuThreshold(unsigned char* suppressedImage, unsigned char* thre
     else if (suppressedImage[i] > 25) suppressedImage[i] = weak;
     else suppressedImage[i] = 0;
   }
+  // bring all the threads together
   __syncthreads();
   // hysteresis
+  // if any weak pixel is next to a strong pixel, make it become a strong pixel
   if (col < WIDTH && row < HEIGHT) {
     row = i/WIDTH;
     col = i%WIDTH;
@@ -320,11 +341,13 @@ __global__ void gpuThreshold(unsigned char* suppressedImage, unsigned char* thre
         }
       }
     }
+    //set it to strong if next to a strong, zero if not
     if (nextToStrong) thresholdImage[i] = strong;
     else thresholdImage[i] = 0;
   }
 }
 
+// cleanup anything that was neither weak or strong and set them to 0
 __global__ void gpuCleanup(unsigned char* thresholdImage, unsigned char* finalImage) {
   int i, col, row;
   col = threadIdx.x + blockIdx.x * blockDim.x;
@@ -352,24 +375,27 @@ __global__ void gpuCleanup(unsigned char* thresholdImage, unsigned char* finalIm
 //******************************************************************************
 //******************************************************************************
 
+//SEE COMMENTS ABOVE
 void serialGrayscale(unsigned char* colorImage, unsigned char* grayImage, int width, int height) {
-  for (int i=0; i < width*height; i++) {
-    unsigned char temp = (colorImage[3*i] + colorImage[3*i+1] +  colorImage[3*i+2])/3;
+  int i;
+  unsigned char temp;
+  for (i=0; i < width*height; i++) {
+    temp = (colorImage[3*i] + colorImage[3*i+1] +  colorImage[3*i+2])/3;
     grayImage[i] = temp;
   }
 }
 
 void serialGaussianBlur(unsigned char* grayImage, unsigned char* blurredImage, int width, int height) {
   unsigned char val;
-  int offset, row, col;
+  int offset, row, col, r, c;
   float gauss[3][3] = {{0.01, 0.08, 0.01}, {0.08, 0.64, 0.08}, {0.01, 0.08, 0.01}};
 
-  for (int i=0; i<width*height; i++) {
+  for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
     val = 0;
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row>=height-1 && r > 0) || (col>=width-1 && c > 0)) {
           val += 0;
         } else {
@@ -385,18 +411,18 @@ void serialGaussianBlur(unsigned char* grayImage, unsigned char* blurredImage, i
 
 void serialEdgeDetection(unsigned char* blurredImage, unsigned char* edgeImage, float* directions, int width, int height) {
   double valx, valy, temp;
-  int offset, row, col, max;
+  int offset, row, col, i, r, c, max;
   int kx[3][3] = {{-1, 0, 1}, {-2, 0, -2}, {-1, 0, 1}};
   int ky[3][3] = {{1, 2, 1}, {0, 0, 0}, {-1, -2, -1}};
 
   max = 0;
-  for (int i=0; i<width*height; i++) {
+  for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
     valx= 0;
     valy= 0;
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row>=height-1 && r > 0) || (col>=width-1 && c > 0)) {
           valx+=0;
           valy+=0;
@@ -419,9 +445,9 @@ void serialEdgeDetection(unsigned char* blurredImage, unsigned char* edgeImage, 
 
 void serialNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressedImage, float* directions, int width, int height) {
   unsigned char val1, val2;
-  int row, col;
+  int row, col, r, i, c;
   float angle;
-  for (int i=0; i<width*height; i++) {
+  for (i=0; i<width*height; i++) {
     val1 = 255;
     val2 = 255;
     row = i/width;
@@ -429,16 +455,16 @@ void serialNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressed
     angle = directions[i] * 180 / 3.141592653;
     if (angle < 0) angle += 180;
 
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row==height-1 && r > 0) || (col==width-1 && c > 0)) {
           ;
         } else {
           // 0 angle
-          if ((r==0 && c==1) && (0 <= angle && angle < 22.5 || 157.5 <= angle <= 180)) {
+          if ((r==0 && c==1) && ((0 <= angle && angle < 22.5) || (157.5 <= angle && angle <= 180))) {
             val1 = edgeImage[i + 1]; // i, j+1 right
           } else
-          if ((r==0 && c==-1) && (0 <= angle && angle < 22.5 || 157.5 <= angle <= 180)) {
+          if ((r==0 && c==-1) && ((0 <= angle && angle < 22.5) || (157.5 <= angle && angle <= 180))) {
             val2 = edgeImage[i - 1]; // i, j-1 left
           } else
           // 45 angle
@@ -476,8 +502,9 @@ void serialNonMaxSuppression(unsigned char* edgeImage, unsigned char* suppressed
 void serialThreshold(unsigned char* suppressedImage, unsigned char* thresholdImage, int width, int height) {
   unsigned char weak = 25;
   unsigned char strong = 255;
+  int i, r, c;
   // set weak and strong pixels
-  for (int i=0; i < width*height; i++) {
+  for (i=0; i < width*height; i++) {
     if (suppressedImage[i] > 50) suppressedImage[i] = strong;
     else if (suppressedImage[i] > 25) suppressedImage[i] = weak;
     else suppressedImage[i] = 0;
@@ -486,12 +513,12 @@ void serialThreshold(unsigned char* suppressedImage, unsigned char* thresholdIma
   // hysteresis
   int offset, row, col;
   bool nextToStrong;
-  for (int i=0; i<width*height; i++) {
+  for (i=0; i<width*height; i++) {
     row = i/width;
     col = i%width;
     nextToStrong = false;
-    for (int r=-1; r<2; r++) {
-      for (int c=-1; c<2; c++) {
+    for (r=-1; r<2; r++) {
+      for (c=-1; c<2; c++) {
         if ((row==0 && r < 0) || (col==0 && c < 0) || (row>=height-1 && r > 0) || (col>=width-1 && c > 0)) {
           ;
         } else {
@@ -508,14 +535,16 @@ void serialThreshold(unsigned char* suppressedImage, unsigned char* thresholdIma
 }
 
 void serialCleanup(unsigned char* thresholdImage, unsigned char* finalImage, int width, int height) {
-  for (int i=0; i< width*height; i++) {
+  int i;
+  for (i=0; i< width*height; i++) {
     if (thresholdImage[i] <255) finalImage[i] = 0;
     else finalImage[i] = 255;
   }
 }
 
 void assertEqual(unsigned char* img1, unsigned char* img2, int n) {
-  for (int i =0; i < n; i++) {
+  int i;
+  for (i =0; i < n; i++) {
     //if (i < 100) printf("%u, %u\n", img1[i], img2[i]);
     //if (img1[i] != img2[i]) printf("%d: %u, %u\n", i, img1[i], img2[i]);
     assert(img1[i] == img2[i]);
